@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from src.data_loading import get_data_loaders
 from src.model import create_model
 
-def train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs, device, save_dir='checkpoints'):
+def train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs, device, save_dir='checkpoints', scaler=None):
     """
     Train the model
     
@@ -22,6 +22,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
         num_epochs: Number of epochs to train
         device: Device to train on (cuda/cpu)
         save_dir: Directory to save checkpoints
+        scaler: GradScaler for mixed precision training
     """
     os.makedirs(save_dir, exist_ok=True)
     
@@ -54,10 +55,20 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
             images, labels = images.to(device), labels.to(device)
             
             optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
+            
+            # Use mixed precision training if scaler is provided
+            if scaler is not None:
+                with torch.cuda.amp.autocast():
+                    outputs = model(images)
+                    loss = criterion(outputs, labels)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
             
             train_loss += loss.item()
             _, predicted = outputs.max(1)
@@ -107,19 +118,20 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
                 'best_val_loss': best_val_loss
             }, os.path.join(save_dir, 'best_model.pth'))
         
-        # Save latest checkpoint after each epoch
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'train_loss': train_loss,
-            'val_loss': val_loss,
-            'train_acc': train_acc,
-            'val_acc': val_acc,
-            'train_losses': train_losses,
-            'val_losses': val_losses,
-            'best_val_loss': best_val_loss
-        }, checkpoint_path)
+        # Save checkpoint less frequently (every 5 epochs)
+        if (epoch + 1) % 5 == 0:
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'train_loss': train_loss,
+                'val_loss': val_loss,
+                'train_acc': train_acc,
+                'val_acc': val_acc,
+                'train_losses': train_losses,
+                'val_losses': val_losses,
+                'best_val_loss': best_val_loss
+            }, checkpoint_path)
         
         print(f'Epoch {epoch+1}/{num_epochs}:')
         print(f'Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%')
@@ -145,17 +157,20 @@ def main():
     print(f'Using device: {device}')
     
     # Hyperparameters
-    batch_size = 32
+    batch_size = 128  # Increased from 32
     num_epochs = 20
     learning_rate = 0.001
     data_dir = 'data'
     
-    # Create data loaders
-    train_loader, val_loader, classes = get_data_loaders(data_dir, batch_size=batch_size)
+    # Create data loaders with more workers
+    train_loader, val_loader, classes = get_data_loaders(data_dir, batch_size=batch_size, num_workers=8)
     
     # Create model
     model = create_model(num_classes=len(classes))
     model = model.to(device)
+    
+    # Enable mixed precision training
+    scaler = torch.cuda.amp.GradScaler()
     
     # Define loss function and optimizer
     criterion = nn.CrossEntropyLoss()
@@ -169,7 +184,8 @@ def main():
         criterion=criterion,
         optimizer=optimizer,
         num_epochs=num_epochs,
-        device=device
+        device=device,
+        scaler=scaler  # Pass scaler for mixed precision
     )
     
     # Plot training curves
