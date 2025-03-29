@@ -153,7 +153,12 @@ def plot_training_curves(train_losses, val_losses):
 
 def main():
     # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    elif hasattr(torch.backends, 'dml') and torch.backends.dml.is_available():
+        device = torch.device('dml')  # For AMD GPUs on Windows
+    else:
+        device = torch.device('cpu')
     print(f'Using device: {device}')
     
     # Hyperparameters
@@ -169,8 +174,8 @@ def main():
     model = create_model(num_classes=len(classes))
     model = model.to(device)
     
-    # Enable mixed precision training
-    scaler = torch.cuda.amp.GradScaler()
+    # Enable mixed precision training only for CUDA
+    scaler = torch.cuda.amp.GradScaler() if torch.cuda.is_available() else None
     
     # Define loss function and optimizer
     criterion = nn.CrossEntropyLoss()
